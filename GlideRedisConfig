@@ -1,0 +1,43 @@
+import glide.api.GlideClient;
+import glide.api.models.configuration.GlideClientConfiguration;
+import glide.api.models.configuration.NodeAddress;
+import glide.api.models.configuration.ServerCredentials;
+import glide.api.models.configuration.IamAuthConfig;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import java.util.concurrent.ExecutionException;
+
+@Configuration
+public class GlideRedisConfig {
+
+    @Bean
+    public GlideClient glideClient() throws ExecutionException, InterruptedException {
+        
+        // 1. Configure the IAM Authentication details
+        IamAuthConfig iamConfig = IamAuthConfig.builder()
+            .clusterName("snd-ticketing-valkey") 
+            .region("us-east-1")
+            .isServerless(true) // Crucial for your ElastiCache Serverless cache!
+            .build();
+
+        // 2. Pass the IAM config into the ServerCredentials along with your AnywhereRole
+        ServerCredentials credentials = ServerCredentials.builder()
+            .username("hl-snd-ticketing-v1-AnywhereRole")
+            .iamConfig(iamConfig)
+            .build();
+
+        // 3. Build the final Glide connection using those credentials
+        GlideClientConfiguration config = GlideClientConfiguration.builder()
+            .address(NodeAddress.builder()
+                .host("snd-ticketing-valkey-x4ubek.serverless.use1.cache.amazonaws.com")
+                .port(6379)
+                .build())
+            .useTLS(true)
+            .credentials(credentials) 
+            .build();
+
+        return GlideClient.createClient(config).get();
+    }
+}
