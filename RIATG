@@ -1,0 +1,57 @@
+package com.example.config;
+
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.signer.Aws4Signer;
+import software.amazon.awssdk.auth.signer.params.Aws4PresignerParams;
+import software.amazon.awssdk.http.SdkHttpFullRequest;
+import software.amazon.awssdk.regions.Region;
+
+import java.net.URI;
+import java.time.Instant;
+
+public class RedisIamAuthTokenGenerator {
+
+    public static String generateAuthToken(
+            String host,
+            int port,
+            String username,
+            String region) {
+
+        try {
+
+            Aws4Signer signer = Aws4Signer.create();
+
+            SdkHttpFullRequest request =
+                    SdkHttpFullRequest.builder()
+                            .method("GET")
+                            .uri(new URI(
+                                    String.format(
+                                            "https://%s:%d/?Action=connect&User=%s",
+                                            host,
+                                            port,
+                                            username)))
+                            .build();
+
+            Aws4PresignerParams params =
+                    Aws4PresignerParams.builder()
+                            .awsCredentials(
+                                    DefaultCredentialsProvider.create()
+                                            .resolveCredentials())
+                            .signingName("elasticache")
+                            .signingRegion(Region.of(region))
+                            .expirationTime(
+                                    Instant.now().plusSeconds(900))
+                            .build();
+
+            SdkHttpFullRequest signed =
+                    signer.presign(request, params);
+
+            return signed.getUri().toString()
+                    .replace("https://", "");
+
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Failed to generate Redis IAM token", e);
+        }
+    }
+}
