@@ -1,0 +1,48 @@
+package com.example.config;
+
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisURI;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+
+@Configuration
+public class RedisConfig {
+
+    @Value("${spring.data.redis.host}")
+    private String host;
+
+    @Value("${spring.data.redis.port}")
+    private int port;
+
+    @Value("${aws.region}")
+    private String region;
+
+    @Value("${redis.iam.username}")
+    private String username;
+
+    @Bean
+    public RedisConnectionFactory redisConnectionFactory() {
+
+        String authToken =
+                RedisIamAuthTokenGenerator.generateAuthToken(
+                        host,
+                        port,
+                        username,
+                        region);
+
+        RedisURI redisURI =
+                RedisURI.builder()
+                        .withHost(host)
+                        .withPort(port)
+                        .withSsl(true)
+                        .withAuthentication(username, authToken)
+                        .build();
+
+        return new LettuceConnectionFactory(
+                new io.lettuce.core.resource.DefaultClientResources(),
+                redisURI);
+    }
+}
