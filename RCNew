@@ -1,0 +1,43 @@
+@Configuration
+public class RedisConfig {
+
+    @Value("${spring.data.redis.host}")
+    private String host;
+
+    @Value("${spring.data.redis.port}")
+    private int port;
+
+    @Value("${aws.region}")
+    private String region;
+
+    @Value("${redis.username:default}")
+    private String username;
+
+    @Bean
+    public RedisConnectionFactory redisConnectionFactory() {
+
+        String authToken =
+                RedisIamAuthTokenGenerator.generateAuthToken(
+                        host,
+                        port,
+                        username,
+                        region);
+
+        RedisStandaloneConfiguration redisConfig =
+                new RedisStandaloneConfiguration();
+
+        redisConfig.setHostName(host);
+        redisConfig.setPort(port);
+        redisConfig.setUsername(username);
+        redisConfig.setPassword(RedisPassword.of(authToken));
+
+        LettuceClientConfiguration clientConfig =
+                LettuceClientConfiguration.builder()
+                        .useSsl()
+                        .build();
+
+        return new LettuceConnectionFactory(
+                redisConfig,
+                clientConfig);
+    }
+}
