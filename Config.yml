@@ -1,0 +1,15 @@
+spring:
+  data:
+    redis:
+      host: snd-ticketing-valkey-x4ubek.serverless.use1.cache.amazonaws.com
+      port: 6379
+
+aws:
+  region: us-east-1
+
+redis:
+  iam:
+    username: default
+
+
+
