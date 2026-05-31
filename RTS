@@ -1,0 +1,18 @@
+@Service
+@RequiredArgsConstructor
+public class RedisTestService {
+
+    private final StringRedisTemplate redisTemplate;
+
+    public void test() {
+
+        redisTemplate.opsForValue()
+                .set("test-key", "hello");
+
+        String value =
+                redisTemplate.opsForValue()
+                        .get("test-key");
+
+        System.out.println(value);
+    }
+}
