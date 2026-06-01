@@ -1,0 +1,59 @@
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.signer.Aws4Signer;
+import software.amazon.awssdk.auth.signer.params.Aws4PresignerParams;
+import software.amazon.awssdk.http.SdkHttpFullRequest;
+import software.amazon.awssdk.http.SdkHttpMethod;
+import software.amazon.awssdk.regions.Region;
+
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.time.Duration;
+import java.time.Instant;
+
+public class ElastiCacheIamAuth {
+
+    /**
+     * Generates an IAM Auth Token for AWS ElastiCache (Valkey/Redis).
+     *
+     * @param clusterName The replication group ID (e.g., "snd-ticketing-valkey")
+     * @param userId      The ElastiCache IAM User ID (e.g., "snd-tkts-jenkins-ec2-instprofile")
+     * @param region      The AWS Region (e.g., Region.US_EAST_1)
+     * @return The SigV4 presigned token string
+     */
+    public static String getIamAuthToken(String clusterName, String userId, Region region) throws URISyntaxException {
+        // 1. Fetch AWS credentials (uses default chain: Env vars, EC2 Profile, etc.)
+        AwsCredentialsProvider credentialsProvider = DefaultCredentialsProvider.create();
+
+        // 2. Build the base request. Action=connect and User=userId are strictly required.
+        URI endpointUri = new URI("http", clusterName, "/", "Action=connect&User=" + userId, null);
+        SdkHttpFullRequest request = SdkHttpFullRequest.builder()
+                .method(SdkHttpMethod.GET)
+                .uri(endpointUri)
+                .build();
+
+        // 3. Define the SigV4 presigner parameters. IAM Auth tokens expire in 15 mins.
+        Aws4PresignerParams signerParams = Aws4PresignerParams.builder()
+                .signingRegion(region)
+                .awsCredentials(credentialsProvider.resolveCredentials())
+                .signingName("elasticache")
+                .expirationTime(Instant.now().plus(Duration.ofMinutes(15)))
+                .build();
+
+        // 4. Sign the request
+        SdkHttpFullRequest presignedRequest = Aws4Signer.create().presign(request, signerParams);
+
+        // 5. Strip the protocol prefix to get the final token string format
+        return presignedRequest.getUri().toString().replace("http://", "");
+    }
+
+    public static void main(String[] args) throws URISyntaxException {
+        // Example based on the screenshot provided
+        String token = getIamAuthToken(
+                "snd-ticketing-valkey", 
+                "snd-tkts-jenkins-ec2-instprofile", 
+                Region.US_EAST_1
+        );
+        System.out.println(token);
+    }
+}
