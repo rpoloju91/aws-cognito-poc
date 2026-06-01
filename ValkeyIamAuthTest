@@ -1,0 +1,102 @@
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisCredentials;
+import io.lettuce.core.RedisCredentialsProvider;
+import io.lettuce.core.RedisURI;
+import io.lettuce.core.api.StatefulRedisConnection;
+import io.lettuce.core.api.sync.RedisCommands;
+import reactor.core.publisher.Mono;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.signer.Aws4Signer;
+import software.amazon.awssdk.auth.signer.params.Aws4PresignerParams;
+import software.amazon.awssdk.http.SdkHttpFullRequest;
+import software.amazon.awssdk.http.SdkHttpMethod;
+import software.amazon.awssdk.regions.Region;
+
+import java.net.URI;
+import java.time.Duration;
+import java.time.Instant;
+
+public class ValkeyIamAuthTest {
+
+    // ==========================================
+    // 1. UPDATE THESE VARIABLES FOR YOUR ENVIRONMENT
+    // ==========================================
+    private static final String HOST = "master.snd-ticketing-valkey.xxxxx.use1.cache.amazonaws.com";
+    private static final int PORT = 6379;
+    private static final String CLUSTER_NAME = "snd-ticketing-valkey";
+    private static final String USER_ID = "snd-tkts-jenkins-ec2-instprofile";
+    private static final Region AWS_REGION = Region.US_EAST_1;
+
+    public static void main(String[] args) {
+        System.out.println("Starting Valkey IAM Auth Test...");
+
+        // 2. Configure dynamic credentials provider
+        RedisCredentialsProvider credentialsProvider = new RedisCredentialsProvider() {
+            @Override
+            public Mono<RedisCredentials> resolveCredentials() {
+                return Mono.fromCallable(() -> {
+                    System.out.println("Generating new AWS IAM Auth Token...");
+                    String token = generateIamAuthToken(CLUSTER_NAME, USER_ID, AWS_REGION);
+                    return RedisCredentials.just(USER_ID, token);
+                });
+            }
+        };
+
+        // 3. Build the secure connection URI
+        RedisURI redisURI = RedisURI.builder()
+                .withHost(HOST)
+                .withPort(PORT)
+                .withSsl(true) // SSL IS MANDATORY FOR IAM AUTH
+                .withAuthentication(credentialsProvider)
+                .build();
+
+        // 4. Initialize client and connect
+        RedisClient redisClient = RedisClient.create(redisURI);
+        
+        try (StatefulRedisConnection<String, String> connection = redisClient.connect()) {
+            System.out.println("Successfully connected to Valkey!");
+            
+            // 5. Send a PING command
+            RedisCommands<String, String> syncCommands = connection.sync();
+            String response = syncCommands.ping();
+            
+            System.out.println("Server returned: " + response);
+            
+            if ("PONG".equals(response)) {
+                System.out.println("TEST PASSED: Ready for Spring Boot integration.");
+            }
+            
+        } catch (Exception e) {
+            System.err.println("TEST FAILED: Could not connect to Valkey.");
+            e.printStackTrace();
+        } finally {
+            // Clean up resources
+            redisClient.shutdown();
+        }
+    }
+
+    /**
+     * Generates the 15-minute AWS IAM Auth Token.
+     */
+    private static String generateIamAuthToken(String clusterName, String userId, Region region) throws Exception {
+        URI endpointUri = new URI("http", clusterName, "/", "Action=connect&User=" + userId, null);
+
+        SdkHttpFullRequest request = SdkHttpFullRequest.builder()
+                .method(SdkHttpMethod.GET)
+                .uri(endpointUri)
+                .build();
+
+        // Sign the request
+        Aws4PresignerParams signerParams = Aws4PresignerParams.builder()
+                .signingRegion(region)
+                .awsCredentials(DefaultCredentialsProvider.create().resolveCredentials())
+                .signingName("elasticache")
+                .expirationTime(Instant.now().plus(Duration.ofMinutes(15)))
+                .build();
+
+        SdkHttpFullRequest presignedRequest = Aws4Signer.create().presign(request, signerParams);
+
+        // Return the formatted token string
+        return presignedRequest.getUri().toString().replace("http://", "");
+    }
+}
