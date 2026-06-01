@@ -1,0 +1,96 @@
+import io.lettuce.core.RedisCredentials;
+import io.lettuce.core.RedisCredentialsProvider;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.connection.RedisConfiguration;
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.connection.lettuce.RedisCredentialsProviderFactory;
+import reactor.core.publisher.Mono;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.signer.Aws4Signer;
+import software.amazon.awssdk.auth.signer.params.Aws4PresignerParams;
+import software.amazon.awssdk.http.SdkHttpFullRequest;
+import software.amazon.awssdk.http.SdkHttpMethod;
+import software.amazon.awssdk.regions.Region;
+
+import java.net.URI;
+import java.time.Duration;
+import java.time.Instant;
+
+@Configuration
+public class ElastiCacheRedisConfig {
+
+    @Value("${spring.data.redis.host}")
+    private String redisHost;
+
+    @Value("${spring.data.redis.port:6379}")
+    private int redisPort;
+
+    @Value("${aws.elasticache.cluster-name}")
+    private String clusterName;
+
+    @Value("${aws.elasticache.user-id}")
+    private String userId;
+
+    @Value("${aws.region:us-east-1}")
+    private String awsRegion;
+
+    @Bean
+    public LettuceConnectionFactory redisConnectionFactory() {
+        // 1. Set up the basic host and port connection
+        RedisStandaloneConfiguration redisConfig = new RedisStandaloneConfiguration(redisHost, redisPort);
+
+        // 2. Enforce SSL (Mandatory for AWS IAM Auth)
+        LettuceClientConfiguration clientConfig = LettuceClientConfiguration.builder()
+                .useSsl()
+                .build();
+
+        // 3. Create the Connection Factory
+        LettuceConnectionFactory factory = new LettuceConnectionFactory(redisConfig, clientConfig);
+
+        // 4. Attach the dynamic credentials provider
+        // This runs silently in the background whenever Lettuce connects or reconnects
+        factory.setRedisCredentialsProviderFactory(new RedisCredentialsProviderFactory() {
+            @Override
+            public RedisCredentialsProvider createCredentialsProvider(RedisConfiguration configuration) {
+                return () -> Mono.fromCallable(() -> {
+                    String token = generateIamAuthToken();
+                    return RedisCredentials.just(userId, token);
+                });
+            }
+        });
+
+        return factory;
+    }
+
+    /**
+     * Helper method to generate the 15-minute AWS IAM Auth Token.
+     */
+    private String generateIamAuthToken() throws Exception {
+        Region region = Region.of(awsRegion);
+
+        // The Action=connect and User=userId parameters are strictly required by AWS
+        URI endpointUri = new URI("http", clusterName, "/", "Action=connect&User=" + userId, null);
+
+        SdkHttpFullRequest request = SdkHttpFullRequest.builder()
+                .method(SdkHttpMethod.GET)
+                .uri(endpointUri)
+                .build();
+
+        // Sign the request to expire in 15 minutes
+        Aws4PresignerParams signerParams = Aws4PresignerParams.builder()
+                .signingRegion(region)
+                .awsCredentials(DefaultCredentialsProvider.create().resolveCredentials())
+                .signingName("elasticache")
+                .expirationTime(Instant.now().plus(Duration.ofMinutes(15)))
+                .build();
+
+        SdkHttpFullRequest presignedRequest = Aws4Signer.create().presign(request, signerParams);
+
+        // Strip the http:// prefix to format it correctly for ElastiCache
+        return presignedRequest.getUri().toString().replace("http://", "");
+    }
+}
