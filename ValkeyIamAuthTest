@@ -21,10 +21,10 @@ public class ValkeyIamAuthTest {
     // ==========================================
     // 1. UPDATE THESE VARIABLES FOR YOUR ENVIRONMENT
     // ==========================================
-    private static final String HOST = "master.snd-ticketing-valkey.xxxxx.use1.cache.amazonaws.com";
+    private static final String HOST = "";
     private static final int PORT = 6379;
-    private static final String CLUSTER_NAME = "snd-ticketing-valkey";
-    private static final String USER_ID = "snd-tkts-jenkins-ec2-instprofile";
+    private static final String CLUSTER_NAME = "";
+    private static final String USER_ID = "";
     private static final Region AWS_REGION = Region.US_EAST_1;
 
     public static void main(String[] args) {
