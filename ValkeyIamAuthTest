@@ -79,7 +79,8 @@ public class ValkeyIamAuthTest {
      * Generates the 15-minute AWS IAM Auth Token.
      */
     private static String generateIamAuthToken(String clusterName, String userId, Region region) throws Exception {
-        URI endpointUri = new URI("http", clusterName, "/", "Action=connect&User=" + userId, null);
+        URI endpointUri = new URI("http", clusterName, "/", "Action=connect&User=" + userId + "
+&X-Amz-Expires=900, null);
 
         SdkHttpFullRequest request = SdkHttpFullRequest.builder()
                 .method(SdkHttpMethod.GET)
