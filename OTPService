@@ -1,0 +1,71 @@
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class OtpAuthService {
+
+    private final RedisCommands<String, String> redisCommands;
+
+    private static final long OTP_EXPIRY_SECONDS = 300;
+
+    public void generateAndSendOtp(
+            SendEmailOtp request) {
+
+        String email =
+                request.getEmail()
+                        .trim()
+                        .toLowerCase();
+
+        String otp = generateOtp();
+
+        String redisKey =
+                "EMAIL_OTP:" + email;
+
+        redisCommands.setex(
+                redisKey,
+                OTP_EXPIRY_SECONDS,
+                otp);
+
+        sendEmail(email, otp);
+
+        log.info(
+                "OTP stored in Valkey for {}",
+                email);
+    }
+
+    public void verifyOtp(
+            VerifyOtpRequest request) {
+
+        String email =
+                request.getEmail()
+                        .trim()
+                        .toLowerCase();
+
+        String redisKey =
+                "EMAIL_OTP:" + email;
+
+        String storedOtp =
+                redisCommands.get(redisKey);
+
+        if (storedOtp == null) {
+            throw new RuntimeException(
+                    "OTP expired");
+        }
+
+        if (!storedOtp.equals(request.getOtp())) {
+            throw new RuntimeException(
+                    "Invalid OTP");
+        }
+
+        redisCommands.del(redisKey);
+
+        log.info(
+                "OTP verified successfully");
+    }
+
+    private String generateOtp() {
+
+        return String.valueOf(
+                ThreadLocalRandom.current()
+                        .nextInt(100000, 999999));
+    }
+}
