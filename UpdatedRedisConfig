@@ -1,0 +1,52 @@
+@Configuration
+public class RedisConfig {
+
+    @Value("${redis.host}")
+    private String host;
+
+    @Value("${redis.port}")
+    private int port;
+
+    @Value("${redis.user-id}")
+    private String userId;
+
+    @Value("${redis.serverless-cache-name}")
+    private String cacheName;
+
+    @Value("${redis.region}")
+    private String region;
+
+    @Bean
+    public RedisCommands<String, String> redisCommands() {
+
+        RedisCredentialsProvider credentialsProvider =
+                () -> Mono.fromCallable(() -> {
+
+                    String token =
+                            generateIamAuthToken(
+                                    cacheName,
+                                    userId,
+                                    Region.of(region));
+
+                    return RedisCredentials.just(
+                            userId,
+                            token);
+                });
+
+        RedisURI redisURI =
+                RedisURI.builder()
+                        .withHost(host)
+                        .withPort(port)
+                        .withSsl(true)
+                        .withAuthentication(credentialsProvider)
+                        .build();
+
+        RedisClient redisClient =
+                RedisClient.create(redisURI);
+
+        StatefulRedisConnection<String, String> connection =
+                redisClient.connect();
+
+        return connection.sync();
+    }
+}
