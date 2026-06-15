@@ -24,3 +24,17 @@ protected <T> T executeSingleResult(
             ? records.get(0)
             : null;
 }
+
+
+
+==================================
+
+public CustomerProfileDTO getCustomerProfile(
+        String sessionKey) {
+
+    return executeSingleResult(
+            "usp_Get_Customer_Profile",
+            CustomerProfileDTO.class,
+            Map.of("p_Session_Key", sessionKey)
+    );
+}
