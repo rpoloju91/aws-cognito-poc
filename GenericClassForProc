@@ -1,0 +1,26 @@
+protected <T> T executeSingleResult(
+        String procName,
+        Class<T> clazz,
+        Map<String, Object> params) {
+
+    String schemaName =
+            jdbcTemplate.execute(Connection::getCatalog);
+
+    SimpleJdbcCall call =
+            new SimpleJdbcCall(jdbcTemplate)
+                    .withCatalogName(schemaName)
+                    .withProcedureName(procName)
+                    .returningResultSet(
+                            "#result-set-1",
+                            BeanPropertyRowMapper.newInstance(clazz));
+
+    Map<String, Object> result =
+            call.execute(params);
+
+    List<T> records =
+            (List<T>) result.get("#result-set-1");
+
+    return (records != null && !records.isEmpty())
+            ? records.get(0)
+            : null;
+}
