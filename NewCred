@@ -1,0 +1,29 @@
+    public String generateElastiCacheToken(String userId) {
+        // 1. MUST use "http" to match the legacy code and ElastiCache's backend hash calculation
+        SdkHttpFullRequest request = SdkHttpFullRequest.builder()
+                .method(SdkHttpMethod.GET)
+                .protocol("http") 
+                .host(cacheName)
+                .encodedPath("/")
+                .appendRawQueryParameter("Action", "connect")
+                .appendRawQueryParameter("User", userId)
+                // 🚨 REMOVE manual "X-Amz-Expires" append. The signer adds this automatically.
+                .build();
+
+        AwsV4HttpSigner signer = AwsV4HttpSigner.create();
+
+        SignedRequest signedRequest = signer.sign(r -> r
+                .identity(awsCredentialsProvider().resolveCredentials())
+                .request(request)
+                .putProperty(AwsV4HttpSigner.SERVICE_SIGNING_NAME, "elasticache")
+                // Use your injected 'region' string directly here
+                .putProperty(AwsV4HttpSigner.REGION_NAME, region) 
+                .putProperty(AwsV4HttpSigner.AUTH_LOCATION, AwsV4HttpSigner.AuthLocation.QUERY_STRING)
+                .putProperty(AwsV4HttpSigner.EXPIRATION_DURATION, Duration.ofMinutes(15))
+                // 2. CRITICAL FIX: This disables payload signing, stripping out the "extra characters"
+                .putProperty(AwsV4HttpSigner.PAYLOAD_SIGNING_ENABLED, false)
+        );
+
+        // 3. Strip the http:// prefix since we changed the builder protocol to http
+        return ((SdkHttpFullRequest) signedRequest.request()).getUri().toString().replace("http://", "");
+    }
