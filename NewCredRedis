@@ -1,0 +1,104 @@
+package com.hlt.api.config;
+
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisCredentials;
+import io.lettuce.core.RedisCredentialsProvider;
+import io.lettuce.core.RedisURI;
+import io.lettuce.core.api.StatefulRedisConnection;
+import io.lettuce.core.api.sync.RedisCommands;
+import jakarta.annotation.PostConstruct;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import reactor.core.publisher.Mono;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.signer.Aws4Signer;
+import software.amazon.awssdk.auth.signer.params.Aws4PresignerParams;
+import software.amazon.awssdk.http.SdkHttpFullRequest;
+import software.amazon.awssdk.http.SdkHttpMethod;
+import software.amazon.awssdk.regions.Region;
+
+import java.net.URI;
+import java.time.Duration;
+import java.time.Instant;
+
+@Configuration
+public class RedisConfig {
+
+    @Value("${redis.host}")
+    private String host;
+
+    @Value("${redis.port}")
+    private int port;
+
+    @Value("${redis.user-id}")
+    private String userId;
+
+    @Value("${redis.serverless-cache-name}")
+    private String cacheName;
+
+    @Value("${redis.region}")
+    private String region;
+
+    // 1. Declare a single, static credentials provider to fix the CodeQL resource leak
+    private static final DefaultCredentialsProvider CREDENTIALS_PROVIDER = 
+            DefaultCredentialsProvider.builder().build();
+
+    @PostConstruct
+    public void printRedisConfig() {
+        System.out.println("================================");
+        System.out.println("REDIS HOST  : " + host);
+        System.out.println("REDIS PORT  : " + port);
+        System.out.println("REDIS USER  : " + userId);
+        System.out.println("ENV HOST    : " + System.getenv("VALKEY_HOST"));
+        System.out.println("================================");
+    }
+
+    @Bean
+    public RedisCommands<String, String> redisCommands() {
+        RedisCredentialsProvider credentialsProvider =
+                () -> Mono.fromCallable(() -> {
+                    String token = generateIamAuthToken(cacheName, userId, Region.of(region));
+                    return RedisCredentials.just(userId, token);
+                });
+
+        RedisURI redisURI =
+                RedisURI.builder()
+                        .withHost(host)
+                        .withPort(port)
+                        .withSsl(true)
+                        .withAuthentication(credentialsProvider)
+                        .build();
+
+        RedisClient redisClient = RedisClient.create(redisURI);
+        StatefulRedisConnection<String, String> connection = redisClient.connect();
+        
+        return connection.sync();
+    }
+
+    /**
+     * Generates the AWS IAM Auth Token using the proven Aws4Signer logic.
+     */
+    // 2. Explicitly tell CodeQL to ignore the deprecated API usage here
+    @SuppressWarnings("deprecation")
+    private static String generateIamAuthToken(String clusterName, String userId, Region region) throws Exception {
+        URI endpointUri = new URI("http", clusterName, "/", "Action=connect&User=" + userId, null);
+
+        SdkHttpFullRequest request = SdkHttpFullRequest.builder()
+                .method(SdkHttpMethod.GET)
+                .uri(endpointUri)
+                .build();
+
+        Aws4PresignerParams signerParams = Aws4PresignerParams.builder()
+                .signingRegion(region)
+                // Use the safely managed static provider to prevent memory leaks
+                .awsCredentials(CREDENTIALS_PROVIDER.resolveCredentials())
+                .signingName("elasticache")
+                .expirationTime(Instant.now().plus(Duration.ofMinutes(15)))
+                .build();
+
+        SdkHttpFullRequest presignedRequest = Aws4Signer.create().presign(request, signerParams);
+
+        return presignedRequest.getUri().toString().replace("http://", "");
+    }
+}
