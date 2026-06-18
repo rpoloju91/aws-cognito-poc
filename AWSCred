@@ -1,0 +1,45 @@
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.http.SdkHttpFullRequest;
+import software.amazon.awssdk.http.SdkHttpMethod;
+import software.amazon.awssdk.http.auth.aws.signer.AwsV4HttpSigner;
+import software.amazon.awssdk.http.auth.spi.signer.SignedRequest;
+import software.amazon.awssdk.regions.Region;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Configuration;
+
+import java.time.Duration;
+
+@Configuration
+public class RedisConfig {
+
+    // 1. Inject the provider rather than instantiating it inline to prevent resource leaks
+    @Autowired
+    private AwsCredentialsProvider credentialsProvider;
+    
+    private final Region region = Region.US_EAST_1; // Replace with your target region
+
+    public String generateElastiCacheToken(String userId) {
+        // 2. Build the base request
+        SdkHttpFullRequest request = SdkHttpFullRequest.builder()
+                .method(SdkHttpMethod.GET)
+                .protocol("https")
+                .host("elasticache") // Or your specific cluster endpoint
+                .appendRawQueryParameter("Action", "connect")
+                .appendRawQueryParameter("User", userId)
+                .build();
+
+        // 3. Use the modern HttpSigner instead of the deprecated Aws4PresignerParams
+        AwsV4HttpSigner signer = AwsV4HttpSigner.create();
+
+        SignedRequest signedRequest = signer.sign(r -> r
+                .identity(credentialsProvider.resolveCredentials())
+                .request(request)
+                .putProperty(AwsV4HttpSigner.SERVICE_SIGNING_NAME, "elasticache")
+                .putProperty(AwsV4HttpSigner.REGION_NAME, region.id())
+                .putProperty(AwsV4HttpSigner.AUTH_LOCATION, AwsV4HttpSigner.AuthLocation.QUERY_STRING)
+                .putProperty(AwsV4HttpSigner.EXPIRATION_DURATION, Duration.ofMinutes(15))
+        );
+
+        return ((SdkHttpFullRequest) signedRequest.request()).getUri().toString();
+    }
+}
