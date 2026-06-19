@@ -1,0 +1,222 @@
+package com.example.redis.auth;
+
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import software.amazon.awssdk.http.SdkHttpFullRequest;
+import software.amazon.awssdk.http.SdkHttpMethod;
+import software.amazon.awssdk.http.auth.aws.signer.AwsV4FamilyHttpSigner;
+import software.amazon.awssdk.http.auth.aws.signer.AwsV4HttpSigner;
+import software.amazon.awssdk.http.auth.spi.signer.SignedRequest;
+import software.amazon.awssdk.regions.Region;
+
+import java.time.Duration;
+
+/**
+ * Builds an AWS SigV4 presigned URL accepted by ElastiCache / Valkey IAM auth
+ * as the password (a.k.a. "IAM auth token").
+ *
+ * Thread-safe and immutable -- reuse a single instance.
+ */
+public final class IamAuthTokenRequest {
+
+    private static final String SERVICE_NAME           = "elasticache";
+    private static final String ACTION                 = "connect";
+    private static final String RESOURCE_TYPE_VALUE    = "ServerlessCache";
+    private static final Duration TOKEN_EXPIRY         = Duration.ofMinutes(15);
+    private static final String SIGNING_PROTOCOL       = "http";
+    private static final String SCHEME_PREFIX_TO_STRIP = "http://";
+
+    private final String userId;
+    private final String cacheName;
+    private final Region region;
+    private final boolean serverless;
+    private final AwsV4HttpSigner signer;
+
+    public IamAuthTokenRequest(String userId, String cacheName, Region region, boolean serverless) {
+        this.userId = userId;
+        this.cacheName = cacheName;
+        this.region = region;
+        this.serverless = serverless;
+        this.signer = AwsV4HttpSigner.create();
+    }
+
+    public String toSignedRequestUri(AwsCredentials credentials) {
+        SdkHttpFullRequest.Builder requestBuilder = SdkHttpFullRequest.builder()
+                .method(SdkHttpMethod.GET)
+                .protocol(SIGNING_PROTOCOL)
+                .host(cacheName)
+                .encodedPath("/")
+                .appendRawQueryParameter("Action", ACTION)
+                .appendRawQueryParameter("User", userId);
+
+        if (serverless) {
+            requestBuilder.appendRawQueryParameter("ResourceType", RESOURCE_TYPE_VALUE);
+        }
+
+        SdkHttpFullRequest request = requestBuilder.build();
+
+        SignedRequest signed = signer.sign(r -> r
+                .identity(credentials)
+                .request(request)
+                .putProperty(AwsV4HttpSigner.SERVICE_SIGNING_NAME, SERVICE_NAME)
+                .putProperty(AwsV4HttpSigner.REGION_NAME, region.id())
+                .putProperty(AwsV4FamilyHttpSigner.AUTH_LOCATION,
+                             AwsV4FamilyHttpSigner.AuthLocation.QUERY_STRING)
+                .putProperty(AwsV4HttpSigner.EXPIRATION_DURATION, TOKEN_EXPIRY)
+                .putProperty(AwsV4HttpSigner.PAYLOAD_SIGNING_ENABLED, Boolean.TRUE)
+        );
+
+        return ((SdkHttpFullRequest) signed.request())
+                .getUri().toString()
+                .replace(SCHEME_PREFIX_TO_STRIP, "");
+    }
+}
+
+=======================================
+package com.example.redis.auth;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.concurrent.atomic.AtomicReference;
+
+/**
+ * Thread-safe cached wrapper around {@link IamAuthTokenRequest}.
+ *
+ * AWS-issued tokens are valid for 15 minutes; we refresh after 10 minutes
+ * to leave a safe buffer.
+ */
+public final class CachingIamAuthTokenProvider {
+
+    private static final Logger log = LoggerFactory.getLogger(CachingIamAuthTokenProvider.class);
+
+    private final IamAuthTokenRequest delegate;
+    private final AwsCredentialsProvider credentialsProvider;
+    private final Duration refreshAfter;
+    private final AtomicReference<CachedToken> cache = new AtomicReference<>();
+
+    public CachingIamAuthTokenProvider(IamAuthTokenRequest delegate,
+                                       AwsCredentialsProvider credentialsProvider) {
+        this(delegate, credentialsProvider, Duration.ofMinutes(10));
+    }
+
+    public CachingIamAuthTokenProvider(IamAuthTokenRequest delegate,
+                                       AwsCredentialsProvider credentialsProvider,
+                                       Duration refreshAfter) {
+        this.delegate = delegate;
+        this.credentialsProvider = credentialsProvider;
+        this.refreshAfter = refreshAfter;
+    }
+
+    public String getToken() {
+        CachedToken current = cache.get();
+        if (current != null && current.isFresh(refreshAfter)) {
+            return current.token;
+        }
+        synchronized (this) {
+            current = cache.get();
+            if (current != null && current.isFresh(refreshAfter)) {
+                return current.token;
+            }
+            log.debug("Refreshing ElastiCache IAM auth token");
+            String fresh = delegate.toSignedRequestUri(credentialsProvider.resolveCredentials());
+            cache.set(new CachedToken(fresh, Instant.now()));
+            return fresh;
+        }
+    }
+
+    private record CachedToken(String token, Instant createdAt) {
+        boolean isFresh(Duration ttl) {
+            return Instant.now().isBefore(createdAt.plus(ttl));
+        }
+    }
+}
+----------------------------------------------------------
+package com.example.redis;
+
+import com.example.redis.auth.CachingIamAuthTokenProvider;
+import com.example.redis.auth.IamAuthTokenRequest;
+import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisCredentials;
+import io.lettuce.core.RedisCredentialsProvider;
+import io.lettuce.core.RedisURI;
+import io.lettuce.core.api.StatefulRedisConnection;
+import io.lettuce.core.api.sync.RedisCommands;
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import reactor.core.publisher.Mono;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+
+@Configuration
+public class RedisConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(RedisConfig.class);
+
+    @Value("${redis.host}")                  private String host;
+    @Value("${redis.port}")                  private int port;
+    @Value("${redis.user-id}")               private String userId;
+    @Value("${redis.serverless-cache-name}") private String cacheName;
+    @Value("${redis.region}")                private String region;
+    @Value("${redis.serverless:true}")       private boolean serverless;
+
+    @PostConstruct
+    public void printRedisConfig() {
+        log.info("================================");
+        log.info("REDIS HOST  : {}", host);
+        log.info("REDIS PORT  : {}", port);
+        log.info("REDIS USER  : {}", userId);
+        log.info("REDIS CACHE : {}", cacheName);
+        log.info("REDIS REGION: {}", region);
+        log.info("SERVERLESS  : {}", serverless);
+        log.info("================================");
+    }
+
+    @Bean
+    public AwsCredentialsProvider awsCredentialsProvider() {
+        return DefaultCredentialsProvider.create();
+    }
+
+    @Bean
+    public IamAuthTokenRequest iamAuthTokenRequest() {
+        return new IamAuthTokenRequest(userId, cacheName, Region.of(region), serverless);
+    }
+
+    @Bean
+    public CachingIamAuthTokenProvider cachingTokenProvider(IamAuthTokenRequest req,
+                                                            AwsCredentialsProvider creds) {
+        return new CachingIamAuthTokenProvider(req, creds);
+    }
+
+    @Bean(destroyMethod = "shutdown")
+    public RedisClient redisClient(CachingIamAuthTokenProvider tokens) {
+        RedisCredentialsProvider credsProvider = () -> Mono.fromCallable(
+                () -> RedisCredentials.just(userId, tokens.getToken()));
+
+        RedisURI uri = RedisURI.builder()
+                .withHost(host)
+                .withPort(port)
+                .withSsl(true)
+                .withAuthentication(credsProvider)
+                .build();
+
+        return RedisClient.create(uri);
+    }
+
+    @Bean(destroyMethod = "close")
+    public StatefulRedisConnection<String, String> redisConnection(RedisClient client) {
+        return client.connect();
+    }
+
+    @Bean
+    public RedisCommands<String, String> redisCommands(StatefulRedisConnection<String, String> conn) {
+        return conn.sync();
+    }
+}
