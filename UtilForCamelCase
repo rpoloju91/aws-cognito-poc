@@ -1,0 +1,32 @@
+private List<Map<String, Object>> convertResponse(List<Map<String, Object>> rows) {
+
+    if (rows == null) {
+        return Collections.emptyList();
+    }
+
+    List<Map<String, Object>> response = new ArrayList<>();
+
+    for (Map<String, Object> row : rows) {
+
+        Map<String, Object> map = new LinkedHashMap<>();
+
+        for (Map.Entry<String, Object> entry : row.entrySet()) {
+
+            String key = toCamelCase(entry.getKey());
+            Object value = entry.getValue();
+
+            // Convert 0/1 to boolean
+            if (value instanceof Number &&
+                    key.startsWith("is")) {
+
+                value = ((Number) value).intValue() == 1;
+            }
+
+            map.put(key, value);
+        }
+
+        response.add(map);
+    }
+
+    return response;
+}
