@@ -29,4 +29,33 @@ private List<Map<String, Object>> convertResponse(List<Map<String, Object>> rows
     }
 
     return response;
+
+
+private String toCamelCase(String value) {
+
+    StringBuilder builder = new StringBuilder();
+
+    boolean upper = false;
+
+    for (char c : value.toCharArray()) {
+
+        if (c == '_') {
+            upper = true;
+            continue;
+        }
+
+        if (builder.length() == 0) {
+            builder.append(Character.toLowerCase(c));
+        } else if (upper) {
+            builder.append(Character.toUpperCase(c));
+            upper = false;
+        } else {
+            builder.append(Character.toLowerCase(c));
+        }
+    }
+
+    return builder.toString();
 }
+
+
+}y
